@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -240,6 +241,7 @@
   #lock .card { width: 100%; max-width: 340px; text-align: center; }
   #lock h2 { margin: 0 0 6px; font-size: 20px; }
   #lock p { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+  #who button { background: none; border: none; color: var(--brand); font-size: 14px; padding: 0 0 0 4px; cursor: pointer; text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -249,7 +251,7 @@
   <section class="page active" id="page-log">
     <header>
       <h1>What did you eat?</h1>
-      <p id="logDate"></p>
+      <p><span id="logDate"></span><span id="who"></span></p>
     </header>
 
     <div class="card" id="recordCard">
@@ -340,7 +342,7 @@
 
 <div id="lock">
   <div class="card">
-    <h2>Enter passcode</h2>
+    <h2>Enter your code</h2>
     <p>You only need to do this once on this phone.</p>
     <input type="password" id="passInput" inputmode="numeric" autocomplete="current-password">
     <button class="primary" id="passBtn">Unlock</button>
@@ -712,17 +714,39 @@ $('dayPicker').addEventListener('change', e => { if (e.target.value) loadDay(e.t
 $('passBtn').addEventListener('click', async () => {
   setPass($('passInput').value.trim());
   try {
-    await api('/api/ping');
+    await checkIn();
     $('lock').classList.remove('show');
     hideError($('passError'));
-    refreshTodayPill();
+    startOver();
+    if ($('page-today').classList.contains('active')) loadDay(viewDate);
   } catch { showError($('passError'), "That code didn't work."); }
 });
 $('passInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('passBtn').click(); });
 
+// ===================== who's using it =====================
+function showWho(name) {
+  $('who').innerHTML = name
+    ? ` · ${esc(name)} <button id="switchUser">Not you?</button>`
+    : '';
+  const b = $('switchUser');
+  if (b) b.addEventListener('click', () => {
+    setPass('');
+    $('who').innerHTML = '';
+    $('todayPill').innerHTML = '';
+    $('passInput').value = '';
+    $('lock').classList.add('show');
+  });
+}
+async function checkIn() {
+  const d = await api('/api/ping');
+  showWho(d.name);
+  refreshTodayPill();
+  return d;
+}
+
 // ===================== start =====================
 setLogHeader();
-api('/api/ping').then(refreshTodayPill).catch(() => {});
+checkIn().catch(() => {});
 // If the app sits open past midnight, roll the dates over when it comes back.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
