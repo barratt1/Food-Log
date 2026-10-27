@@ -9,6 +9,9 @@ Env vars:
     GOOGLE_SERVICE_ACCOUNT_JSON  full contents of the Google service-account key file
     SHEET_ID                     ID of the Google Sheet (from its URL)
     APP_PASSCODE                 optional: a code the app asks for once per phone
+    USERS                        optional, for several people (replaces SHEET_ID and
+                                 APP_PASSCODE): [{"name": "...", "code": "...",
+                                 "sheet": "<sheet id>"}, ...]  See README.
     OPENAI_MODEL                 optional, default gpt-4o-mini
     TRANSCRIBE_MODEL             optional, default whisper-1
 
@@ -26,7 +29,7 @@ import tempfile
 import uuid
 from functools import wraps
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory
 from openai import OpenAI
 
 from sheets import NUTRIENT_KEYS, get_store, item_to_row
@@ -70,13 +73,45 @@ Respond with ONLY a JSON object:
 "sodium_mg": 0}]}"""
 
 
+def load_users():
+    """People who can use the app, from the USERS env var (JSON list):
+        [{"name": "Christian", "code": "4821", "sheet": "<sheet id>"}, ...]
+    Each person's code is their login and picks which Google Sheet they write to.
+    Without USERS, the app runs single-user on APP_PASSCODE + SHEET_ID."""
+    raw = os.environ.get("USERS", "").strip()
+    if not raw:
+        return None
+    try:
+        users = json.loads(raw)
+    except ValueError:
+        raise RuntimeError("USERS isn't valid JSON. Check the brackets, quotes and commas.") from None
+    out = {}
+    for u in users:
+        code = str(u.get("code", "")).strip()
+        if not code or not u.get("sheet"):
+            raise RuntimeError(f"Every person in USERS needs a code and a sheet: {u.get('name')}")
+        if code in out:
+            raise RuntimeError(f"Two people in USERS share the code {code}. Codes must be unique.")
+        out[code] = {"name": str(u.get("name", "")).strip(), "sheet": u["sheet"]}
+    return out
+
+
 def require_passcode(fn):
-    """If APP_PASSCODE is set, API calls must send it in X-App-Passcode."""
+    """Work out who is using the app from the X-App-Passcode header."""
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        code = os.environ.get("APP_PASSCODE")
-        if code and request.headers.get("X-App-Passcode") != code:
-            return jsonify({"error": "passcode", "message": "Wrong or missing passcode."}), 401
+        sent = (request.headers.get("X-App-Passcode") or "").strip()
+        users = load_users()
+        if users is not None:
+            user = users.get(sent)
+            if not user:
+                return jsonify({"error": "passcode", "message": "Wrong or missing code."}), 401
+            g.user_name, g.sheet_id = user["name"], user["sheet"]
+        else:
+            code = os.environ.get("APP_PASSCODE")
+            if code and sent != code.strip():
+                return jsonify({"error": "passcode", "message": "Wrong or missing passcode."}), 401
+            g.user_name, g.sheet_id = "", None  # falls back to SHEET_ID
         return fn(*args, **kwargs)
     return wrapper
 
@@ -93,7 +128,7 @@ def index():
 @app.route("/api/ping")
 @require_passcode
 def ping():
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "name": g.user_name})
 
 
 @app.route("/api/analyze", methods=["POST"])
@@ -190,7 +225,7 @@ def log_items():
         entry_id = "e" + uuid.uuid4().hex[:10]
         item["id"] = entry_id
         rows.append(item_to_row(entry_id, date, time, item, transcript, logged_at))
-    get_store().append(rows)
+    get_store(g.sheet_id).append(rows)
     return jsonify({"saved": len(rows), "items": items})
 
 
@@ -200,7 +235,7 @@ def day():
     date = request.args.get("date", "")
     if not _valid_date(date):
         return error("Missing or invalid date (expected yyyy-mm-dd).")
-    items = get_store().items_for_date(date)
+    items = get_store(g.sheet_id).items_for_date(date)
     totals = {k: 0 for k in NUTRIENT_KEYS}
     for it in items:
         for k in NUTRIENT_KEYS:
@@ -212,7 +247,7 @@ def day():
 @app.route("/api/entry/<entry_id>", methods=["DELETE"])
 @require_passcode
 def delete_entry(entry_id):
-    if not get_store().delete(entry_id):
+    if not get_store(g.sheet_id).delete(entry_id):
         return error("That entry wasn't found.", 404)
     return jsonify({"deleted": entry_id})
 
