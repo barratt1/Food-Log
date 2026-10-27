@@ -159,12 +159,35 @@ The instructions the AI follows are plain English in `app.py` under
 2% milk". To try a newer or stronger model, set an `OPENAI_MODEL` environment
 variable on Render (default `gpt-4o-mini`).
 
-## Adding more people later
-Right now the app is single-user: one sheet, one passcode. The clean way to
-grow is still **one app on one domain** with a login, where each person gets
-their own Google Sheet (the app stores which sheet belongs to whom). Storage
-is all in `sheets.py`, so that change mostly happens there. Don't copy the
-app per person.
+## Adding more people
+Everyone uses the **same app and URL**. Each person gets their own **code**,
+and that code decides which Google Sheet their food goes into. People only
+ever see their own data.
+
+1. Create a Google Sheet for each person, and **share each one (Editor) with
+   the same service-account email** (`food-log-bot@...`).
+2. In Render → **Environment**, add a variable named `USERS` with one entry
+   per person (including you):
+   ```json
+   [
+     {"name": "Christian", "code": "4821", "sheet": "1AbC...your sheet id"},
+     {"name": "Sam",       "code": "7733", "sheet": "1XyZ...Sam's sheet id"},
+     {"name": "Pat",       "code": "5190", "sheet": "1QwE...Pat's sheet id"}
+   ]
+   ```
+   Every code must be different. Use 4+ digits, since the code is the
+   person's login.
+3. Delete `APP_PASSCODE` and `SHEET_ID` (`USERS` replaces them), then
+   **Save and deploy**.
+4. Send each person the URL and their code. They enter it once, and the app
+   shows their name at the top. **Not you?** switches to a different
+   person's code on a shared phone.
+
+To add someone later, add a line to `USERS` and save. To remove someone,
+delete their line. Their sheet stays as it is.
+
+All OpenAI usage is billed to your key. Each entry costs a fraction of a
+cent, so a few people add very little.
 
 ## Files
 - `app.py`: Flask server (transcribe, nutrition lookup, save, daily view, delete)
