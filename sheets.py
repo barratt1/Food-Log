@@ -17,6 +17,7 @@ can try the app locally without Google set up (data is lost on restart).
 import datetime
 import json
 import os
+import re
 import threading
 
 LOG_TAB = "Log"
@@ -110,11 +111,21 @@ def _date_str(v):
     return s
 
 
+def clean_sheet_id(raw):
+    """Accept the bare ID, the full URL, or the ID with stray quotes/spaces."""
+    s = str(raw).strip().strip('"').strip("'").strip()
+    m = re.search(r"/d/([a-zA-Z0-9_-]+)", s)
+    return m.group(1) if m else s
+
+
 class SheetStore:
     def __init__(self, sheet_id, service_account_info):
         import gspread
         self._gc = gspread.service_account_from_dict(service_account_info)
-        self._sheet_id = sheet_id
+        self._sheet_id = clean_sheet_id(sheet_id)
+        self._email = service_account_info.get("client_email", "?")
+        print(f"[food-log] Google Sheet {self._sheet_id[:6]}...{self._sheet_id[-4:]} "
+              f"({len(self._sheet_id)} chars), service account {self._email}", flush=True)
         self._log = None
         self._lock = threading.Lock()
 
@@ -126,7 +137,14 @@ class SheetStore:
         with self._lock:
             if self._log is not None:
                 return self._log
-            sh = self._gc.open_by_key(self._sheet_id)
+            try:
+                sh = self._gc.open_by_key(self._sheet_id)
+            except gspread.SpreadsheetNotFound:
+                raise RuntimeError(
+                    f"Google can't find the sheet. Share it (Editor) with {self._email} "
+                    f"and check SHEET_ID (now {self._sheet_id[:6]}...{self._sheet_id[-4:]}, "
+                    f"{len(self._sheet_id)} chars). If the sheet shows an .XLSX badge, "
+                    f"use File > Save as Google Sheets and use the new ID.") from None
             try:
                 ws = sh.worksheet(LOG_TAB)
             except gspread.WorksheetNotFound:
@@ -198,20 +216,29 @@ class MemoryStore:
         return len(self.rows) < before
 
 
-_store = None
+_stores = {}
 
 
-def get_store():
-    global _store
-    if _store is None:
-        raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-        sheet_id = os.environ.get("SHEET_ID")
-        if raw and sheet_id:
-            _store = SheetStore(sheet_id, json.loads(raw))
-        elif os.environ.get("FAKE_SHEET") == "1":
-            _store = MemoryStore()
-        else:
+def get_store(sheet_id=None):
+    """One store per Google Sheet. sheet_id comes from the person's entry in
+    USERS; without it, the single-user SHEET_ID is used."""
+    sheet_id = clean_sheet_id(sheet_id or os.environ.get("SHEET_ID", ""))
+    if sheet_id in _stores:
+        return _stores[sheet_id]
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if raw and sheet_id:
+        try:
+            info = json.loads(raw.strip())
+        except ValueError:
             raise RuntimeError(
-                "Google Sheet isn't configured. Set GOOGLE_SERVICE_ACCOUNT_JSON and "
-                "SHEET_ID (or FAKE_SHEET=1 to test without Google).")
-    return _store
+                "GOOGLE_SERVICE_ACCOUNT_JSON isn't valid JSON. Paste the whole "
+                ".json key file, starting with { and ending with }.") from None
+        store = SheetStore(sheet_id, info)
+    elif os.environ.get("FAKE_SHEET") == "1":
+        store = MemoryStore()
+    else:
+        raise RuntimeError(
+            "Google Sheet isn't configured. Set GOOGLE_SERVICE_ACCOUNT_JSON and "
+            "SHEET_ID or USERS (or FAKE_SHEET=1 to test without Google).")
+    _stores[sheet_id] = store
+    return store
